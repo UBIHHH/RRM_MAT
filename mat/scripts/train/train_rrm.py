@@ -23,11 +23,12 @@ def make_train_env(all_args):
             else:
                 print("Can not support the " + all_args.env_name + "environment.")
                 raise NotImplementedError
+            # 不同环境不同种子
             env.seed(all_args.seed + rank * 1000)
             return env
         return init_env
     
-    if all_args.n_rollout_threads == 1:
+    if all_args.n_rollout_threads == 1:#单进程和多进程
         return ShareDummyVecEnv([get_env_fn(0)])
     else:
         return SubprocVecEnv([get_env_fn(i) for i in range(all_args.n_rollout_threads)])
@@ -154,6 +155,7 @@ def main(args):
     from mat.algorithms.mat.algorithm.transformer_policy import TransformerPolicy as PolicySingle
     from mat.utils.shared_buffer import SharedReplayBuffer
 
+    # 策略网络
     if all_args.share_policy:
         policy = PolicySingle(all_args, 
                              envs.observation_space[0], 
