@@ -1,12 +1,12 @@
 #!/bin/sh
-env="RRM"
+CONFIG=../../config_environment_setting_MAT.yaml
 algo="mat"
 exp="rrm_test"
 seed=1
 
-echo "env is ${env}, algo is ${algo}, exp is ${exp}, seed is ${seed}"
+echo "using env config $CONFIG, algo=${algo}, exp=${exp}, seed=${seed}"
 CUDA_VISIBLE_DEVICES=0 python train/train_rrm.py \
-    --env_name ${env} \
+    --env_name RRM \
     --algorithm_name ${algo} \
     --experiment_name ${exp} \
     --seed ${seed} \
@@ -25,7 +25,4 @@ CUDA_VISIBLE_DEVICES=0 python train/train_rrm.py \
     --gain 0.01 \
     --use_eval \
     --eval_interval 10 \
-    --n_pbs 3 \
-    --n_ues 15 \
-    --n_channels 5 \
-    --obs_dim 30
+    --config_env ${CONFIG}

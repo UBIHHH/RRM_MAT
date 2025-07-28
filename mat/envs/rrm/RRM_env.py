@@ -1,184 +1,289 @@
 import numpy as np
-from gymnasium.spaces import Box, Discrete
-import sys
-import os
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
-from RRM import Environment, BS, UE
+import gym
+# from RRM import Environment
+from marlcustomeEnv import MarlCustomEnv4
+from types import SimpleNamespace
+from gym.spaces import Box
 
 class RRMEnv:
     def __init__(self, args):
         self.args = args
+
         self.sce = self._create_scenario_from_args(args)
-        self.env = Environment(self.sce)
-        
+
+        self.env = MarlCustomEnv4(self.sce)
         self.num_agents = self.env.BS_num
-        self.n_agents = self.num_agents #ShareDummyVec 需要
+        self.n_agents = self.num_agents  # ShareDummyVecEnv 需要
 
-        obs_dim = args.obs_dim if hasattr(args, 'obs_dim') else 30
-        
-        # 动作空间（信道）
-        self.action_space = []
-        for _ in range(self.num_agents):
-            self.action_space.append(Discrete(args.n_channels))
-        
-        # 观测空间，数值没有上下限
-        self.observation_space = []
-        for _ in range(self.num_agents):
-            self.observation_space.append(Box(low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32))
-        
-        # 共享观测空间，为每个基站创建，包含所有基站观测
-        self.share_observation_space = [Box(low=-np.inf, high=np.inf, shape=(obs_dim * self.num_agents,), dtype=np.float32) for _ in range(self.num_agents)]
-    
-    def _create_scenario_from_args(self, args):
-        class Scenario:
-            def __init__(self, args):
-                self.nMBS = args.n_mbs if hasattr(args, 'n_mbs') else 0
-                self.nPBS = args.n_pbs if hasattr(args, 'n_pbs') else 3
-                self.nFBS = args.n_fbs if hasattr(args, 'n_fbs') else 0
-                self.nUEs = args.n_ues if hasattr(args, 'n_ues') else 10
-                self.nChannel = args.n_channels if hasattr(args, 'n_channels') else 5
-                self.rMBS = args.r_mbs if hasattr(args, 'r_mbs') else 500
-                self.rPBS = args.r_pbs if hasattr(args, 'r_pbs') else 300
-                self.rFBS = args.r_fbs if hasattr(args, 'r_fbs') else 100
-                self.txpowerMBSdBm = args.txpower_mbs_dbm if hasattr(args, 'txpower_mbs_dbm') else 43
-                self.txpowerPBSdBm = args.txpower_pbs_dbm if hasattr(args, 'txpower_pbs_dbm') else 36
-                self.txpowerFBSdBm = args.txpower_fbs_dbm if hasattr(args, 'txpower_fbs_dbm') else 23
-                self.BW = args.bandwidth if hasattr(args, 'bandwidth') else 180e3  # 180 kHz
-                self.N0 = args.noise_power if hasattr(args, 'noise_power') else -174  # dBm/Hz 噪声功率谱密度
-                self.fc = args.frequency if hasattr(args, 'frequency') else 2.5  # GHz
-                self.x_max = args.x_max if hasattr(args, 'x_max') else 1000
-                self.y_max = args.y_max if hasattr(args, 'y_max') else 1000
-                self.bsloclist = args.bs_locations if hasattr(args, 'bs_locations') else None # 基站位置，默认随机
-                self.prt = args.print_config if hasattr(args, 'print_config') else False
-        
-        return Scenario(args)
-    
-    def reset(self):
-        '''
-        重置环境，用于下一个episode
-        '''
+        # 每个 agent 的真实动作维度
+        self._agent_act_dims = [space.shape[0] for space in self.env.action_spaces]
+        # 统一到最大维度
+        self._max_act_dim = max(self._agent_act_dims)
+        padded_action_space = Box(low=0.0,
+                                  high=1.0,
+                                  shape=(self._max_act_dim,),
+                                  dtype=np.float32)
+        self.action_space = [padded_action_space] * self.num_agents
+        # obs 取每个 BS 的 len(UE_set)*nRB，pad 到最大值
+        # 1) 记录每个 agent 的真实 obs 维度，以及最大维度
+        ue_counts = [len(bs.UE_set) for bs in self.env.BSs]
+        self.local_obs_dims = [count * self.sce.nRBs for count in ue_counts]
+        self.max_local_obs_dim = max(self.local_obs_dims)
+
+        # 2) 用 max_local_obs_dim 构造统一的 observation_space
+        padded_obs_space = Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(self.max_local_obs_dim,),
+            dtype=np.float32
+        )
+        self.observation_space = [padded_obs_space] * self.num_agents
+
+        # 3) 同理记录共享 obs 的维度
+        share_dim = self.num_agents * self.sce.nUEs * self.sce.nRBs
+        self.share_obs_dim = share_dim
+        full_share_space = Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(share_dim,),
+            dtype=np.float32
+        )
+        self.share_observation_space = [full_share_space] * self.num_agents
+        print("max_local_obs_dim:", self.max_local_obs_dim)
+
+
         self.step_count = 0
-        self.env.random_walk() # 用户随机移动，创建新的状态
-        obs = self._get_obs()
-        share_obs = self._get_share_obs(obs)
-        available_actions = None # 所有动作都可用，没有掩码限制
+
+    def _create_scenario_from_args(self, args):
+        sce = SimpleNamespace(
+            nUEs = args.n_ues,
+            nRBs = args.n_rbs,
+            nMBS = args.n_mbs,
+            nPBS = args.n_pbs,
+            nFBS = args.n_fbs,
+            rMBS = args.r_mbs,
+            rPBS = args.r_pbs,
+            rFBS = args.r_fbs,
+            txpowerMBSdBm = args.txpower_mbs_dbm,
+            txpowerPBSdBm = args.txpower_pbs_dbm,
+            txpowerFBSdBm = args.txpower_fbs_dbm,
+            BW = args.bandwidth,
+            N0 = args.noise_power,
+            QoS_thr = args.qos_thr,
+            fc = args.fc,
+            x_max = args.x_max,
+            y_max = args.y_max,
+            Nb = args.nb,
+            Nrb = args.nrb_max,
+            bsloclist = None,
+            prt = False,
+        )
+        return sce
+
+    def reset(self, seed=None, options=None):
+        self.step_count = 0
+        obs_flat, _ = self.env.reset(seed=seed, options=options)
+        
+        if self.env.history_channel_information is None:
+            self.env.history_channel_information = np.zeros(
+                (self.num_agents, self.sce.nUEs, self.sce.nRBs), 
+                dtype=np.float32
+            )
+            dummy_action = np.zeros(sum(self._agent_act_dims))
+            self.env.get_obs_4baseline(dummy_action)
+        
+        obs_list = self._get_obs()
+        share_obs_list = self._get_share_obs(obs_list)
+        
+        obs = np.stack(obs_list, axis=0)[None, ...]
+        share_obs = np.stack(share_obs_list, axis=0)[None, ...]
+        available_actions = None
         return obs, share_obs, available_actions
-    
-    
+
     def step(self, actions):
+        flat_act = None
+        if isinstance(actions, np.ndarray):
+            if actions.ndim == 3:
+                acts = actions[0]               # (n_agents, max_act_dim)
+            elif actions.ndim == 2:
+                acts = actions                  # (n_agents, max_act_dim)
+            elif actions.ndim == 1:
+                # 已经是一维扁平动作，但需要检查是否是真实维度
+                flat_act = actions
+            else:
+                raise ValueError(f"Unexpected action ndim: {actions.ndim}")
+        else:
+            # list of arrays，先拼成 (n_agents, max_act_dim)
+            acts = np.stack(actions, axis=0)
+
+        if flat_act is None:
+            # 从 padded actions 中提取真实维度的动作
+            real_agent_actions = [
+                acts[i, : self._agent_act_dims[i]]
+                for i in range(self.num_agents)
+            ]
+            
+            # 分离每个agent的UA和RB动作，然后分别拼接
+            all_ua_actions = []
+            all_rb_actions = []
+            
+            for idx, agent_action in enumerate(real_agent_actions):
+                # 计算每个agent的UA动作维度
+                ua_dim = self._agent_act_dims[idx] // (self.env.sce.nRBs + 1)
+                
+                # 分离UA和RB动作
+                ua_part = agent_action[:ua_dim]
+                rb_part = agent_action[ua_dim:]
+                
+                all_ua_actions.append(ua_part)
+                all_rb_actions.append(rb_part)
+            
+            # [所有UA] + [所有RB]
+            flat_act = np.concatenate([
+                np.concatenate(all_ua_actions),  # 所有agent的UA动作
+                np.concatenate(all_rb_actions)   # 所有agent的RB动作
+            ])
+            
+        
+        # print(f"[raw flat_act] min={flat_act.min():.4f}, max={flat_act.max():.4f}")
+
+        # 再做映射
+        normed = self._normalize_actions(flat_act)
+        # 如果动作不在 [0, 1] 范围内，报错
+        if np.any(normed < 0.0) or np.any(normed > 1.0):
+            raise ValueError(f"Normalized actions out of bounds: {normed}")
+        flat_act = normed
+        # todo 映射回0-1再给到reward计算
+        
+        # def unscale_action(self, scaled_action: np.ndarray) -> np.ndarray:
+        #     """
+        #     Rescale the action from [-1, 1] to [low, high]
+        #     (no need for symmetric action space)
+
+        #     :param scaled_action: Action to un-scale
+        #     """
+        #     assert isinstance(
+        #         self.action_space, spaces.Box
+        #     ), f"Trying to unscale an action using an action space that is not a Box(): {self.action_space}"
+        #     low, high = self.action_space.low, self.action_space.high
+        #     return low + (0.5 * (scaled_action + 1.0) * (high - low))
+        
+        # 问问gpt 如何将1d tensor里的数值映射到给定范围【a,b]之间
+        # min-max-normalization； gussian normalization；
+
+        # 检查你这里的计算的数值和 MarlCustomEnv4 中的 MARLstep_withCurrentH 是否一致
+        # 注意：这里的 flat_act 需要是一个一维数组，包含所有 agent 的动作
+        # 删除那个翻转符号的
+
+        # 验证 flat_act 的维度是否正确
+        expected_total_dim = sum(self._agent_act_dims)
+        if len(flat_act) != expected_total_dim:
+            print(f"Warning: flat_act dimension mismatch. Expected: {expected_total_dim}, Got: {len(flat_act)}")
+            print(f"Agent action dims: {self._agent_act_dims}")
+            
+            # 如果维度不匹配，截断或填充
+            if len(flat_act) > expected_total_dim:
+                flat_act = flat_act[:expected_total_dim]
+            else:
+                padded_act = np.zeros(expected_total_dim)
+                padded_act[:len(flat_act)] = flat_act
+                flat_act = padded_act
+
+        rewards_agent = self._calculate_rewards(flat_act)
+
+        obs_list       = self._get_obs()
+        share_obs_list = self._get_share_obs(obs_list)
+        obs       = np.stack(obs_list,       axis=0)[None, ...]
+        share_obs = np.stack(share_obs_list, axis=0)[None, ...]
+        rewards   = rewards_agent.reshape(self.num_agents)[None, :, None]
         self.step_count += 1
-
-        rewards = self._calculate_rewards(actions)
-        next_obs = self._get_obs()
-        next_share_obs = self._get_share_obs(next_obs)
-
-        done = (self.step_count >= self.args.episode_length) # 判断episode是否结束
-        dones = np.array([[done] for _ in range(self.num_agents)], dtype=bool) # 每个agent的done状态
-
-        infos = [{} for _ in range(self.num_agents)] # 为每个基站创建空的信息字典
+        done_flag   = (self.step_count >= self.args.episode_length)
+        dones       = np.array([[[done_flag] for _ in range(self.num_agents)]])
+        infos       = [{} for _ in range(self.num_agents)]
         available_actions = None
 
-        if done:
-            self.step_count = 0
+        return obs, share_obs, rewards, dones, infos, available_actions
+    
+    def _normalize_actions(self, actions: np.ndarray) -> np.ndarray:
+        """
+        将动作映射到[0,1]区间
+        
+        :param actions: 原始动作数组
+        :return: 映射到[0,1]区间的动作数组
+        """
+        return self.map_to_unit_interval_sigmoid(actions)
 
-        return next_obs, next_share_obs, rewards, dones, infos, available_actions
-    
-    def _get_obs(self):
-        obs = []
-        for i, bs in enumerate(self.env.BSs): # 遍历每个基站
-            bs_obs = np.zeros(self.args.obs_dim, dtype=np.float32)
-            
-            obs_idx = 0 # 在观测向量中当前的索引
-            for ue_id in bs.UE_set: #遍历该基站所有的用户
-                if obs_idx + 3 > self.args.obs_dim: #观测向量是否还有空间，因为一个用户需要3个观测值
-                    break
-                    
-                ue = self.env.UEs[ue_id-1] # ue_id从1开始，所以要减1
-                
-                # 计算基站和用户之间的欧几里德距离
-                loc_diff = np.array(bs.BS_Loc) - np.array(ue.location)
-                distance = np.sqrt(np.sum(loc_diff**2))
-                
-                # 计算接收功率和信道增益
-                try:
-                    rx_power, h_power = self.env.test_cal_Receive_Power_new(bs, distance)
-                except AttributeError:
-                    rx_power = 0.0
-                    h_power = 0.0
-                
-                bs_obs[obs_idx] = distance
-                bs_obs[obs_idx+1] = rx_power
-                bs_obs[obs_idx+2] = h_power
-                
-                obs_idx += 3
-            
-            obs.append(bs_obs)
+    def map_to_unit_interval_sigmoid(self, real_values: np.ndarray) -> np.ndarray:
+        """
+        使用Sigmoid函数将实数映射到(0,1)区间
         
-        return obs
+        :param real_values: 任意实数数组
+        :return: 映射到(0,1)区间的数组
+        """
+        # 添加数值稳定性检查
+        clipped_values = np.clip(real_values, -500, 500)  # 防止exp溢出
+        return 1.0 / (1.0 + np.exp(-clipped_values))
 
-    def _get_share_obs(self, obs):
-        '''
-        共享观测，所有基站的观测拼接在一起，然后分发给每个基站
-        '''
-        share_obs = []
-        flat_obs = np.concatenate(obs)
-        for _ in range(self.num_agents):
-            share_obs.append(flat_obs.copy())
-        return share_obs
-    
-    def _calculate_rewards(self, actions):
-        rewards = np.zeros((self.num_agents, 1), dtype=np.float32)
-    
-        channel_assignment = {}
-        # 遍历基站以及其选择的信道，然后将基站和用户分配到信道
-        for bs_idx, action in enumerate(actions):
-            bs = self.env.BSs[bs_idx]
-            channel = action.item()
-            
-            if channel not in channel_assignment:
-                channel_assignment[channel] = []
-            
-            for ue_id in bs.UE_set:
-                ue = self.env.UEs[ue_id-1]
-                channel_assignment[channel].append((bs_idx, ue_id-1))
+    def map_to_unit_interval_tanh(self, real_values: np.ndarray) -> np.ndarray:
+        """
+        使用tanh函数将实数映射到[0,1]区间
         
-        # 计算每个基站-用户的各种数据
-        for channel, assignments in channel_assignment.items():
-            for bs_idx, ue_idx in assignments:
-                bs = self.env.BSs[bs_idx]
-                ue = self.env.UEs[ue_idx]
-                
-                # 功率
-                loc_diff = np.array(bs.BS_Loc) - np.array(ue.location)
-                distance = np.sqrt(np.sum(loc_diff**2))
-                signal_power, _ = self.env.test_cal_Receive_Power_new(bs, distance)
-                
-                # 干扰，是同一信道其他基站对当前用户的功率
-                interference = 0
-                for other_bs_idx, _ in assignments:
-                    if other_bs_idx != bs_idx:
-                        other_bs = self.env.BSs[other_bs_idx]
-                        loc_diff = np.array(other_bs.BS_Loc) - np.array(ue.location)
-                        distance = np.sqrt(np.sum(loc_diff**2))
-                        intf_power, _ = self.env.test_cal_Receive_Power_new(other_bs, distance)
-                        interference += intf_power
-                # 先将dBm转换为mW，然后乘带宽，即总噪声功率=噪声功率谱密度 * 带宽
-                noise_power = 10 ** (self.sce.N0 / 10) * self.sce.BW
-                
-                # SINR = 信号功率 / (干扰 + 噪声功率)
-                if interference + noise_power > 0:
-                    sinr = signal_power / (interference + noise_power)
-                else:
-                    # 如果干扰和噪声功率都为0，指定一个小值，防止除0
-                    sinr = signal_power / 1e-10
-                
-                # 香农公式计算数据速率
-                data_rate = self.sce.BW * np.log2(1 + sinr) / 1e6  # Mbps
-                
-                rewards[bs_idx] += data_rate
-        
-        return rewards
+        :param real_values: 任意实数数组
+        :return: 映射到[0,1]区间的数组
+        """
+        return 0.5 * (np.tanh(real_values) + 1.0)
+    
+    def _get_obs(self) -> list[np.ndarray]:
+        """
+        从 MarlCustomEnv4.history_channel_information 中读取上次 step/reset
+        保存的 channel_power 矩阵（shape=(BS_num * nUEs * nRBs,) 或 (1, …)），
+        reshape 成 (BS_num, nUEs, nRBs)，然后对每个 BS b：
+          - 只取它 own b.UE_set 对应的全局 UE slice
+          - flatten 成一维
+        最后 pad 到所有 agent 的最大长度。
+        """
+        # 确保 history_channel_information 已经过 reset/step 填充
+        if self.env.history_channel_information is None:
+            obs0, _ = self.env.reset()
+            self.env.history_channel_information = obs0.copy()
+        # flatten + reshape
+        flat = np.array(self.env.history_channel_information).ravel()
+        BS_num = self.num_agents
+        nUEs = self.env.sce.nUEs
+        nRBs = self.env.sce.nRBs
+        h3 = flat.reshape(BS_num, nUEs, nRBs)
+        # 按每个 BS 的 UE_set 拆分
+        obs_list = []
+        for b_idx, bs in enumerate(self.env.BSs):
+            # UE_set 里是 global UE 索引，从 1 开始减 1
+            idx = np.array(bs.UE_set, dtype=int) - 1
+            local = h3[b_idx, idx, :]      # shape = (len(idx), nRBs)
+            obs_list.append(local.ravel())
+        # pad 到统一长度
+        padded = []
+        for o in obs_list:
+            if o.size < self.max_local_obs_dim:
+                buf = np.zeros(self.max_local_obs_dim, dtype=o.dtype)
+                buf[: o.size] = o
+                padded.append(buf)
+            else:
+                padded.append(o)
+        return padded
+
+    def _get_share_obs(self, obs_list: list[np.ndarray]) -> list[np.ndarray]:
+        """
+        这里直接广播每个 agent 能看到全部 BS 的 channel info：
+        share_obs_list[i] = 全量 H_flatten
+        """
+        flat_all = np.array(self.env.history_channel_information).ravel()
+        assert flat_all.size == self.share_obs_dim
+        return [flat_all.copy() for _ in range(self.num_agents)]
+    
+    def _calculate_rewards(self, flat_act: np.ndarray) -> np.ndarray:
+        obs, reward, terminated, truncated, info = self.env.MARLstep_withCurrentH(flat_act)        
+        return np.full(self.num_agents, reward, dtype=np.float32)
+            
+
     
     def seed(self, seed=None):
         np.random.seed(seed)

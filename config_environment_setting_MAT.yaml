@@ -1,0 +1,20 @@
+"nUEs": 25 # 50个用户
+"nRBs": 10 # 所有基站共享10个RBG
+"nMBS": 1  # 中间一个宏基站 Macro BS
+"nPBS": 4 # 宏基站的上下左右各有一个 PBS
+"nFBS": 0 # 不设FBS
+"rMBS": 300 # 基站信号范围圆圈的最大半径
+"rPBS": 100 # 同上
+"rFBS": 30 # 同上
+"txpowerMBSdBm": 50 # 基站的发射功率 注意单位是dBm
+"txpowerPBSdBm": 30
+"txpowerFBSdBm": 20
+"BW": 180000 # 带宽  最终实现的速率是 BW*log(1+sinr)
+"nChannel": 20 # 我印象里是不考虑这个
+"N0": -174 #dBm # 环境噪声 单位是dBm注意转换
+"QoS_thr": 5 # 不考虑
+"fc": 6 # 好像不考虑
+"x_max": 1000 # 环境构建一个 1000m*1000m的空间
+"y_max": 1000 # 单位是m
+"Nb" : 10 # max number of user associated by one BS
+"Nrb": 3 # max number of RBG occupied by one user

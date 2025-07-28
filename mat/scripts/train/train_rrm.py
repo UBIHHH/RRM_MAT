@@ -8,11 +8,13 @@ import numpy as np
 from pathlib import Path
 import torch
 sys.path.append("../../")
+sys.path.append("/home/laughtale/RRM_MAT")
 from mat.config import get_config
 from mat.envs.rrm.RRM_env import RRMEnv
 from mat.runner.shared.rrm_runner import RRMRunner
 from mat.envs.env_wrappers import SubprocVecEnv, DummyVecEnv
 from mat.envs.env_wrappers import ShareDummyVecEnv
+import yaml
 
 
 def make_train_env(all_args):
@@ -51,10 +53,14 @@ def make_eval_env(all_args):
         return SubprocVecEnv([get_env_fn(i) for i in range(all_args.n_eval_rollout_threads)])
 
 def parse_args(args, parser):
+    parser.add_argument('--config_env', type=str,
+                        default='config_environment_setting_MAT.yaml',
+                        help="path to yaml env config")
+
     parser.add_argument('--n_mbs', type=int, default=0, help="number of macro base stations")
-    parser.add_argument('--n_pbs', type=int, default=3, help="number of pico base stations")
+    parser.add_argument('--n_pbs', type=int, default=5, help="number of pico base stations")
     parser.add_argument('--n_fbs', type=int, default=0, help="number of femto base stations")
-    parser.add_argument('--n_ues', type=int, default=10, help="number of user equipments")
+    parser.add_argument('--n_ues', type=int, default=50, help="number of user equipments")
     parser.add_argument('--n_channels', type=int, default=5, help="number of channels")
     parser.add_argument('--r_mbs', type=float, default=500, help="radius of macro base station")
     parser.add_argument('--r_pbs', type=float, default=300, help="radius of pico base station")
@@ -76,6 +82,47 @@ def parse_args(args, parser):
 def main(args):
     parser = get_config()
     all_args = parse_args(args, parser)
+
+    all_args.use_eval = True
+    print(f"Forced use_eval to: {all_args.use_eval}")
+
+    # 1) load env config
+    with open(all_args.config_env, 'r') as f:
+        env_cfg = yaml.safe_load(f)
+
+    # 打印 RRM 环境配置
+    if all_args.print_config:
+        print("===== RRM 环境配置 =====")
+        for key, val in env_cfg.items():
+            print(f"{key}: {val}")
+        print("========================")
+
+    # 2) override all_args
+    all_args.n_ues           = env_cfg['nUEs']
+    all_args.n_rbs           = env_cfg['nRBs']
+    all_args.n_mbs           = env_cfg['nMBS']
+    all_args.n_pbs           = env_cfg['nPBS']
+    all_args.n_fbs           = env_cfg['nFBS']
+    all_args.r_mbs           = env_cfg['rMBS']
+    all_args.r_pbs           = env_cfg['rPBS']
+    all_args.r_fbs           = env_cfg['rFBS']
+    all_args.txpower_mbs_dbm = env_cfg['txpowerMBSdBm']
+    all_args.txpower_pbs_dbm = env_cfg['txpowerPBSdBm']
+    all_args.txpower_fbs_dbm = env_cfg['txpowerFBSdBm']
+    all_args.bandwidth       = env_cfg['BW']
+    all_args.n_channel       = env_cfg['nChannel']
+    all_args.noise_power     = env_cfg['N0']
+    all_args.qos_thr         = env_cfg['QoS_thr']
+    all_args.fc              = env_cfg['fc']
+    all_args.x_max           = env_cfg['x_max']
+    all_args.y_max           = env_cfg['y_max']
+    all_args.nb              = env_cfg['Nb']
+    all_args.nrb_max         = env_cfg['Nrb']
+
+    # 3) 重算基站数量 & agents
+    all_args.num_agents = (all_args.n_mbs
+                           + all_args.n_pbs
+                           + all_args.n_fbs)
 
     if all_args.algorithm_name == "rmappo":
         all_args.use_recurrent_policy = True
@@ -139,14 +186,21 @@ def main(args):
     np.random.seed(all_args.seed)
 
     envs = make_train_env(all_args)
+    # 提取第一个子环境的 local_obs_dims
+    if hasattr(envs, "envs"):
+        local_obs_dims = envs.envs[0].max_local_obs_dim
+    else:
+        # 如果是 SubprocVecEnv，则：
+        local_obs_dims = envs.venv.envs[0].max_local_obs_dim
+
     eval_envs = make_eval_env(all_args) if all_args.use_eval else None
-    num_agents = 3  # 3 base stations
+    # num_agents = 3  # 3 base stations
 
     config = {
         "all_args": all_args,
         "envs": envs,
         "eval_envs": eval_envs,
-        "num_agents": num_agents,
+        "num_agents": all_args.num_agents,
         "device": device,
         "run_dir": run_dir
     }
@@ -155,13 +209,21 @@ def main(args):
     from mat.algorithms.mat.algorithm.transformer_policy import TransformerPolicy as PolicySingle
     from mat.utils.shared_buffer import SharedReplayBuffer
 
+    all_args.num_agents = (all_args.n_mbs
+                           + all_args.n_pbs
+                           + all_args.n_fbs)
+
+    # ← 在这里定义局部 num_agents 变量
+    num_agents = all_args.num_agents
+
     # 策略网络
     if all_args.share_policy:
         policy = PolicySingle(all_args, 
                              envs.observation_space[0], 
                              envs.share_observation_space[0],
                              envs.action_space[0], 
-                             num_agents, 
+                             num_agents,
+                             local_obs_dims,
                              device)
     else:
         raise NotImplementedError

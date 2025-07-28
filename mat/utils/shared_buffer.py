@@ -119,7 +119,7 @@ class SharedReplayBuffer(object):
             self.bad_masks[self.step + 1] = bad_masks.copy()
         if active_masks is not None:
             self.active_masks[self.step + 1] = active_masks.copy()
-        if available_actions is not None:
+        if available_actions is not None and self.available_actions is not None:
             self.available_actions[self.step + 1] = available_actions.copy()
 
         self.step = (self.step + 1) % self.episode_length
@@ -154,7 +154,7 @@ class SharedReplayBuffer(object):
             self.bad_masks[self.step + 1] = bad_masks.copy()
         if active_masks is not None:
             self.active_masks[self.step] = active_masks.copy()
-        if available_actions is not None:
+        if available_actions is not None and self.available_actions is not None:
             self.available_actions[self.step] = available_actions.copy()
 
         self.step = (self.step + 1) % self.episode_length

@@ -17,7 +17,7 @@ class TransformerPolicy:
     :param device: (torch.device) specifies the device to run on (cpu/gpu).
     """
 
-    def __init__(self, args, obs_space, cent_obs_space, act_space, num_agents, device=torch.device("cpu")):
+    def __init__(self, args, obs_space, cent_obs_space, act_space, num_agents,local_obs_dim, device=torch.device("cpu")):
         self.device = device
         self.algorithm_name = args.algorithm_name
         self.lr = args.lr
@@ -44,6 +44,7 @@ class TransformerPolicy:
         print("act_dim: ", self.act_dim)
 
         self.num_agents = num_agents
+        self.local_obs_dims = local_obs_dim
         self.tpdv = dict(dtype=torch.float32, device=device)
 
         if self.algorithm_name in ["mat", "mat_dec"]:
@@ -113,7 +114,7 @@ class TransformerPolicy:
         """
 
         cent_obs = cent_obs.reshape(-1, self.num_agents, self.share_obs_dim)
-        obs = obs.reshape(-1, self.num_agents, self.obs_dim)
+        obs = obs.reshape(-1, self.num_agents, self.local_obs_dims)
         if available_actions is not None:
             available_actions = available_actions.reshape(-1, self.num_agents, self.act_dim)
 
@@ -225,4 +226,3 @@ class TransformerPolicy:
 
     def eval(self):
         self.transformer.eval()
-

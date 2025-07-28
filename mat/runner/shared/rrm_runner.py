@@ -62,6 +62,12 @@ class RRMRunner:
         
         self.writter = config['writter']
         self.log_dir = config['log_dir']
+
+        print(f"Runner initialized with:")
+        print(f"  use_eval: {self.use_eval}")
+        print(f"  eval_interval: {self.eval_interval}")
+        print(f"  eval_envs is None: {self.eval_envs is None}")
+        print(f"  eval_episodes: {getattr(self.all_args, 'eval_episodes', 'Not set')}")
         
     def run(self):
         self.warmup()
@@ -93,7 +99,7 @@ class RRMRunner:
                 # 更新奖励，当前step的奖励加入到当前episode的奖励中
                 for i, reward in enumerate(rewards):
                     train_episode_rewards[i] += reward[0]
-                    if dones[i][0]: # 如果当前episode完成，重置
+                    if dones[i].all(): # 如果当前episode完成，重置
                         done_episodes_rewards.append(train_episode_rewards[i])
                         train_episode_rewards[i] = 0
 
@@ -143,8 +149,8 @@ class RRMRunner:
             share_obs = obs
 
         self.buffer.share_obs[0] = share_obs.copy()
-        self.buffer.obs[0] = obs.copy()
-        if available_actions is not None:
+        self.buffer.obs[0] = obs[0].copy()
+        if available_actions is not None and self.buffer.available_actions is not None:
             self.buffer.available_actions[0] = available_actions.copy()
 
     @torch.no_grad() # 不计算梯度，因为不是训练
@@ -175,15 +181,23 @@ class RRMRunner:
         obs, share_obs, rewards, dones, infos, available_actions, \
         values, actions, action_log_probs, rnn_states, rnn_states_critic = data
 
-        dones_env = np.all(dones, axis=(1, 2)) # Dones 为 [n_rollout_threads, num_agents, 1]
+        dones_env = np.all(dones, axis=(1, 2))  # Dones 为 [n_rollout_threads, num_agents, 1]
 
-        if np.any(dones_env == True): # 如果有episode结束，重置RNN
-            rnn_states[dones_env == True] = np.zeros(((dones_env == True).sum(), self.num_agents, self.recurrent_N, self.hidden_size), dtype=np.float32)
-        rnn_states_critic[dones_env == True] = np.zeros(((dones_env == True).sum(), self.num_agents, *self.buffer.rnn_states_critic.shape[3:]), dtype=np.float32)
+        # 修复：使用正确的索引方式重置RNN状态
+        if np.any(dones_env):
+            for i in range(self.n_rollout_threads):
+                if dones_env[i]:
+                    # 只重置已完成环境的RNN状态
+                    rnn_states[i] = np.zeros((self.num_agents, self.recurrent_N, self.hidden_size), dtype=np.float32)
+                    rnn_states_critic[i] = np.zeros((self.num_agents, *self.buffer.rnn_states_critic.shape[3:]), dtype=np.float32)
 
         # 创建episode的mask,1表示没有结束，0表示结束
         masks = np.ones((self.n_rollout_threads, self.num_agents, 1), dtype=np.float32)
-        masks[dones_env, :, :] = 0
+        
+        # 修复：对于已完成的环境，将其所有智能体的mask设为0
+        for i in range(self.n_rollout_threads):
+            if dones_env[i]:
+                masks[i, :, :] = 0
 
         # 对dones取反，表示智能体还在活动中
         active_masks = (~dones).astype(np.float32)
@@ -252,11 +266,16 @@ class RRMRunner:
             
             # 回合结束就重置RNN状态
             if np.any(eval_dones_env):
-                eval_rnn_states[eval_dones_env] = np.zeros(((eval_dones_env).sum(), self.num_agents, self.recurrent_N, self.hidden_size), dtype=np.float32)
+                # Replace boolean indexing with explicit loop
+                for i in range(self.n_eval_rollout_threads):
+                    if eval_dones_env[i]:
+                        eval_rnn_states[i] = np.zeros((self.num_agents, self.recurrent_N, self.hidden_size), dtype=np.float32)
             
             # 更新mask
             eval_masks = np.ones((self.n_eval_rollout_threads, self.num_agents, 1), dtype=np.float32)
-            eval_masks[eval_dones_env, :, :] = 0
+            for i in range(self.n_eval_rollout_threads):
+                if eval_dones_env[i]:
+                    eval_masks[i, :, :] = 0
 
             # 记录episode奖励
             for eval_i in range(self.n_eval_rollout_threads):
