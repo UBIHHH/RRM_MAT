@@ -14,7 +14,7 @@ CUDA_VISIBLE_DEVICES=0 python train/train_rrm.py \
     --n_rollout_threads 1 \
     --n_eval_rollout_threads 1 \
     --num_mini_batch 1 \
-    --episode_length 25 \
+    --episode_length 200 \
     --num_env_steps 10000000 \
     --ppo_epoch 10 \
     --clip_param 0.05 \

@@ -1,6 +1,7 @@
 import numpy as np
 import gym
 # from RRM import Environment
+import numpy as np
 from marlcustomeEnv import MarlCustomEnv4
 from types import SimpleNamespace
 from gym.spaces import Box
@@ -28,7 +29,12 @@ class RRMEnv:
         # 1) 记录每个 agent 的真实 obs 维度，以及最大维度
         ue_counts = [len(bs.UE_set) for bs in self.env.BSs]
         self.local_obs_dims = [count * self.sce.nRBs for count in ue_counts]
-        self.max_local_obs_dim = max(self.local_obs_dims)
+        
+        # 使用固定的最大观测空间维度，确保环境实例间的一致性
+        # 理论上每个BS最多可以关联的UE数量基于覆盖范围，实际中可能超过配置的Nb
+        # 为了保险起见，使用所有UE数量作为上限
+        theoretical_max_ues_per_bs = self.sce.nUEs  # 最极端情况：所有UE都在一个BS范围内
+        self.max_local_obs_dim = theoretical_max_ues_per_bs * self.sce.nRBs
 
         # 2) 用 max_local_obs_dim 构造统一的 observation_space
         padded_obs_space = Box(

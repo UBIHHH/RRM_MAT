@@ -22,7 +22,10 @@ def discrete_autoregreesive_act(decoder, obs_rep, obs, batch_size, n_agent, acti
         output_action[:, i, :] = action.unsqueeze(-1)
         output_action_log[:, i, :] = action_log.unsqueeze(-1)
         if i + 1 < n_agent:
-            shifted_action[:, i + 1, 1:] = F.one_hot(action, num_classes=action_dim)
+            # Fix inplace operation by creating a new tensor instead of modifying in-place
+            new_shifted_action = shifted_action.clone()
+            new_shifted_action[:, i + 1, 1:] = F.one_hot(action, num_classes=action_dim).detach()
+            shifted_action = new_shifted_action
     return output_action, output_action_log
 
 
@@ -61,7 +64,10 @@ def continuous_autoregreesive_act(decoder, obs_rep, obs, batch_size, n_agent, ac
         output_action[:, i, :] = action
         output_action_log[:, i, :] = action_log
         if i + 1 < n_agent:
-            shifted_action[:, i + 1, :] = action
+            # Fix inplace operation by creating a new tensor instead of modifying in-place
+            new_shifted_action = shifted_action.clone()
+            new_shifted_action[:, i + 1, :] = action.detach()  # detach to avoid gradient issues
+            shifted_action = new_shifted_action
 
         # print("act_mean: ", act_mean)
         # print("action: ", action)
@@ -71,7 +77,9 @@ def continuous_autoregreesive_act(decoder, obs_rep, obs, batch_size, n_agent, ac
 
 def continuous_parallel_act(decoder, obs_rep, obs, action, batch_size, n_agent, action_dim, tpdv):
     shifted_action = torch.zeros((batch_size, n_agent, action_dim)).to(**tpdv)
-    shifted_action[:, 1:, :] = action[:, :-1, :]
+    # Fix potential inplace operation by using proper assignment
+    if n_agent > 1:
+        shifted_action[:, 1:, :] = action[:, :-1, :].detach()
 
     act_mean = decoder(shifted_action, obs_rep, obs)
     action_std = torch.sigmoid(decoder.log_std) * 0.5

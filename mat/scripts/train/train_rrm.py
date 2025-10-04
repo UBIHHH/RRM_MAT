@@ -76,6 +76,10 @@ def parse_args(args, parser):
     parser.add_argument('--print_config', action='store_true', default=False, help="whether to print environment configuration")
     parser.add_argument('--obs_dim', type=int, default=30, help="dimension of observation space")
     
+    # 添加预训练模型相关参数
+    parser.add_argument('--pretrained_model_path', type=str, default=None, help="path to pretrained model")
+    parser.add_argument('--use_pretrain', action='store_true', default=False, help="whether to use pretrained model")
+    
     all_args = parser.parse_known_args(args)[0]
     return all_args
 
@@ -228,6 +232,68 @@ def main(args):
     else:
         raise NotImplementedError
 
+    # 加载预训练模型
+    if all_args.use_pretrain and all_args.pretrained_model_path:
+        print(f"Loading pretrained model from: {all_args.pretrained_model_path}")
+        try:
+            checkpoint = torch.load(all_args.pretrained_model_path, map_location=device)
+            
+            # Check if it's a MAT-bridged model (our converted model)
+            if isinstance(checkpoint, dict) and 'transformer_state_dict' in checkpoint:
+                # This is a MAT-compatible checkpoint (either from our bridge or from MAT training)
+                policy.transformer.load_state_dict(checkpoint['transformer_state_dict'], strict=False)
+                print("Successfully loaded MAT-compatible pretrained model!")
+                
+                # Show transfer information if available
+                if 'transfer_info' in checkpoint:
+                    transfer_info = checkpoint['transfer_info']
+                    print(f"Transfer method: {transfer_info.get('transfer_method', 'unknown')}")
+                    print(f"Original model path: {transfer_info.get('simple_model_path', 'unknown')}")
+                    print(f"Model dimensions - obs: {transfer_info.get('obs_dim')}, share_obs: {transfer_info.get('share_obs_dim')}, action: {transfer_info.get('action_dim')}")
+                
+                print(f"Pretrained model epoch: {checkpoint.get('epoch', 'unknown')}")
+                print(f"Pretrained model val loss: {checkpoint.get('val_loss', 'unknown')}")
+                
+            elif isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                # Check if the model architecture is compatible with MAT
+                model_state = checkpoint['model_state_dict']
+                mat_keys = set(policy.transformer.state_dict().keys())
+                pretrained_keys = set(model_state.keys())
+                
+                # Check for key compatibility
+                common_keys = mat_keys.intersection(pretrained_keys)
+                if len(common_keys) < len(mat_keys) * 0.1:  # Less than 10% overlap
+                    print("WARNING: Pretrained model architecture is incompatible with MAT architecture!")
+                    print(f"MAT has {len(mat_keys)} keys, pretrained model has {len(pretrained_keys)} keys")
+                    print(f"Only {len(common_keys)} keys match")
+                    print("The pretrained model appears to be from a different architecture (e.g., supervised learning model)")
+                    print("SUGGESTION: Use bridge_pretrained_to_mat.py to convert the model to MAT format")
+                    print("Continuing with random initialization...")
+                else:
+                    # Load compatible weights
+                    policy.transformer.load_state_dict(checkpoint['model_state_dict'], strict=False)
+                    print("Successfully loaded compatible pretrained model weights!")
+                    print(f"Loaded {len(common_keys)} out of {len(mat_keys)} parameters")
+                    print(f"Pretrained model epoch: {checkpoint.get('epoch', 'unknown')}")
+                    print(f"Pretrained model val loss: {checkpoint.get('val_loss', 'unknown')}")
+                    
+            elif isinstance(checkpoint, dict) and 'policy_state_dict' in checkpoint:
+                # Load from RL checkpoint
+                policy.transformer.load_state_dict(checkpoint['policy_state_dict'], strict=False)
+                print("Successfully loaded pretrained model from RL checkpoint!")
+                print(f"Pretrained model epoch: {checkpoint.get('epoch', 'unknown')}")
+                print(f"Pretrained model val loss: {checkpoint.get('val_loss', 'unknown')}")
+            else:
+                # Assume it's just the state dict directly
+                policy.transformer.load_state_dict(checkpoint, strict=False)
+                print("Successfully loaded pretrained model!")
+        except Exception as e:
+            print(f"Failed to load pretrained model: {e}")
+            print("Continuing with random initialization...")
+    elif all_args.use_pretrain:
+        print("Warning: --use_pretrain is True but --pretrained_model_path is not provided!")
+        print("Continuing with random initialization...")
+
     buffer = SharedReplayBuffer(
         all_args,
         num_agents,
@@ -268,7 +334,7 @@ def main(args):
     if all_args.use_wandb:
         run.finish()
     else:
-        runner.writter.export_scalars_to_json(str(runner.log_dir + '/summary.json'))
+        runner.writter.export_scalars_to_json(str(runner.log_dir / 'summary.json'))
         runner.writter.close()
 
 if __name__ == "__main__":
